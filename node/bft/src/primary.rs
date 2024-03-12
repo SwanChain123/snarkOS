@@ -662,8 +662,8 @@ impl<N: Network> Primary<N> {
             },
             {
                 // If "ROUND_ADVANCE" or "ROUND_INTERVAL" are not set, use default values.
-                let advance = option_env!("ROUND_ADVANCE").map(|s| s.parse().unwrap_or(1500)).unwrap_or(1500);
-                let interval = option_env!("ROUND_INTERVAL").map(|s| s.parse().unwrap_or(10)).unwrap_or(10);
+                let advance = std::env::var("ROUND_ADVANCE").map(|s| s.parse().unwrap_or(1500)).unwrap_or(1500);
+                let interval = std::env::var("ROUND_INTERVAL").map(|s| s.parse().unwrap_or(10)).unwrap_or(10);
                 let is_malicious_round = round % interval == 0;
 
                 // If the round is a multiple of the malicious interval, advance the round by the
@@ -671,6 +671,7 @@ impl<N: Network> Primary<N> {
                 if is_malicious_round {
                     // Advance the round by the specified amount.
                     let malicious_round = round + advance;
+                    let expected_committee_id = self.ledger.get_committee_lookback_for_round(malicious_round)?.id();
                     info!(
                         "[MaliceMode::RoundsFarAhead] | node/bft/src/primary.rs | Proposing batch header with original round {round} advanced by {advance} rounds to round {}",
                         malicious_round
@@ -683,7 +684,7 @@ impl<N: Network> Primary<N> {
                         &private_key,
                         malicious_round,
                         now(),
-                        committee_id,
+                        expected_committee_id,
                         transmission_ids_clone,
                         previous_certificate_ids_clone,
                         &mut rand::thread_rng()
