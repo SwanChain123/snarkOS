@@ -33,6 +33,7 @@ use snarkos_node_bft::{
 };
 use snarkos_node_bft_ledger_service::LedgerService;
 use snarkos_node_bft_storage_service::BFTPersistentStorage;
+use snarkos_node_malice::malice_replace;
 use snarkvm::{
     ledger::{
         block::Transaction,
@@ -294,7 +295,22 @@ impl<N: Network> Consensus<N> {
             }
             // Check if the transaction already exists in the ledger.
             if self.ledger.contains_transmission(&TransmissionID::from(&transaction_id))? {
-                bail!("Transaction '{}' exists in the ledger {}", fmt_id(transaction_id), "(skipping)".dimmed());
+                malice_replace!(
+                    MaliceMode::AllowSeenTransaction,
+                    {
+                        bail!(
+                            "Transaction '{}' exists in the ledger {}",
+                            fmt_id(transaction_id),
+                            "(skipping)".dimmed()
+                        );
+                    },
+                    {
+                        info!(
+                            "[MaliceMode::AllowSeenTransaction] | node/consensus/src/lib.rs | Transaction '{}' exists in the ledger {transaction_id}",
+                            "(including anyways)".dimmed()
+                        )
+                    }
+                );
             }
             // Add the transaction to the memory pool.
             trace!("Received unconfirmed transaction '{}' in the queue", fmt_id(transaction_id));

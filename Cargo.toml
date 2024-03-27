@@ -29,6 +29,7 @@ members = [
   "node/bft/storage-service",
   "node/cdn",
   "node/consensus",
+  "node/malice",
   "node/metrics",
   "node/rest",
   "node/router",

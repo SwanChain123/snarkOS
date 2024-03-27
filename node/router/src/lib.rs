@@ -40,6 +40,7 @@ pub use routing::*;
 
 use crate::messages::NodeType;
 use snarkos_account::Account;
+use snarkos_node_malice::malice_replace;
 use snarkos_node_tcp::{is_bogon_ip, is_unspecified_or_broadcast_ip, Config, Tcp};
 use snarkvm::prelude::{Address, Network, PrivateKey, ViewKey};
 
@@ -392,7 +393,35 @@ impl<N: Network> Router<N> {
     /// Returns the list of bootstrap peers.
     pub fn bootstrap_peers(&self) -> Vec<SocketAddr> {
         if cfg!(feature = "test") || self.is_dev {
-            vec![]
+            malice_replace!(MaliceMode::UseBootstrapPeers, { vec![] }, {
+                use std::{
+                    fs::File,
+                    io::{BufRead, BufReader},
+                    path::PathBuf,
+                };
+                let bootstrap_peers_path = PathBuf::from(r"/tmp/bootstrap_peers.txt");
+
+                // Attempt to open the file and proceed if successful
+                match File::open(bootstrap_peers_path) {
+                    Ok(file) => {
+                        let reader = BufReader::new(file);
+                        let addresses = reader.lines()
+                                .map_while(Result::ok) // Take lines that can be read successfully
+                                .filter_map(|line| line.parse::<SocketAddr>().ok()) // Parse each line as SocketAddr and take successful parses
+                                .collect::<Vec<SocketAddr>>(); // Collect into a Vec<SocketAddr>
+                        info!(
+                            "[MaliceMode::UseBootstrapPeers] | node/router/src/lib.rs | Using bootstrap peers from txt file: {:?}",
+                            addresses
+                        );
+                        addresses
+                    }
+                    Err(_) => {
+                        // On error opening the file, return an empty vector
+                        info!("[MaliceMode::UseBootstrapPeers] | node/router/src/lib.rs | No bootstrap peers found");
+                        vec![]
+                    }
+                }
+            })
         } else {
             vec![
                 SocketAddr::from_str("64.23.169.88:4130").unwrap(),

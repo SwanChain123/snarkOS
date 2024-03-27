@@ -22,6 +22,7 @@ use crate::{
     MAX_WORKERS,
 };
 use snarkos_node_bft_ledger_service::LedgerService;
+use snarkos_node_malice::malice_replace;
 use snarkvm::{
     console::prelude::*,
     ledger::{
@@ -335,10 +336,32 @@ impl<N: Network> Worker<N> {
         self.pending.remove(&transaction_id, Some(transmission.clone()));
         // Check if the transaction ID exists.
         if self.contains_transmission(&transaction_id) {
-            bail!("Transaction '{}' already exists.", fmt_id(transaction_id));
+            malice_replace!(
+                MaliceMode::AllowSeenTransaction,
+                {
+                    bail!("Transaction '{}' already exists.", fmt_id(transaction_id));
+                },
+                {
+                    info!(
+                        "[MaliceMode::AllowSeenTransaction] | node/bft/src/worker.rs::343 | Transaction '{transaction_id}' already exists, processing anyways.",
+                    );
+                }
+            )
         }
         // Check that the transaction is well-formed and unique.
-        self.ledger.check_transaction_basic(transaction_id, transaction).await?;
+        malice_replace!(
+            MaliceMode::SkipTransactionCheck,
+            {
+                self.ledger.check_transaction_basic(transaction_id, transaction).await?;
+            },
+            {
+                if let Err(e) = self.ledger.check_transaction_basic(transaction_id, transaction).await {
+                    info!(
+                        "[MaliceMode::SkipTransactionCheck] | node/bft/src/worker.rs::358 | Invalid unconfirmed transaction '{transaction_id}': {e}, processing anyways.",
+                    )
+                }
+            }
+        );
         // Adds the transaction to the ready queue.
         if self.ready.insert(&transaction_id, transmission) {
             trace!("Worker {} - Added unconfirmed transaction '{}'", self.id, fmt_id(transaction_id));

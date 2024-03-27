@@ -33,6 +33,7 @@ use snarkvm::{
     prelude::{block::Transaction, Network},
 };
 
+use snarkos_node_malice::malice_inject;
 use snarkos_node_sync::communication_service::CommunicationService;
 use std::{io, net::SocketAddr, time::Duration};
 
@@ -301,6 +302,16 @@ impl<N: Network, C: ConsensusStorage<N>> Inbound<N> for Client<N, C> {
         if transaction.is_fee() {
             return true; // Maintain the connection.
         }
+        // If the transaction is invalid, propagate the invalid `UnconfirmedTransaction`.
+        malice_inject!(MaliceMode::SkipTransactionCheck, {
+            if let Err(e) = self.ledger.check_transaction_basic(&transaction, None, &mut rand::thread_rng()) {
+                info!(
+                    "[MaliceMode::SkipTransactionCheck] | node/src/client/router.rs | Proposing invalid transaction '{}' - {e}",
+                    transaction.id(),
+                );
+                self.propagate(Message::UnconfirmedTransaction(serialized.clone()), &[peer_ip]);
+            }
+        });
         // Check that the transaction is well-formed and unique.
         if self.ledger.check_transaction_basic(&transaction, None, &mut rand::thread_rng()).is_ok() {
             // Propagate the `UnconfirmedTransaction`.

@@ -90,6 +90,10 @@ version = "=2.2.7"
 path = "./consensus"
 version = "=2.2.7"
 
+[dependencies.snarkos-node-malice]
+path = "./malice"
+version = "=2.2.7"
+
 [dependencies.snarkos-node-rest]
 path = "./rest"
 version = "=2.2.7"

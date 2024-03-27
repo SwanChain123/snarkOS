@@ -39,6 +39,7 @@ use snarkos_node_bft_events::{
     ValidatorsResponse,
 };
 use snarkos_node_bft_ledger_service::LedgerService;
+use snarkos_node_malice::malice_inject;
 use snarkos_node_sync::{communication_service::CommunicationService, MAX_BLOCKS_BEHIND};
 use snarkos_node_tcp::{
     is_bogon_ip,
@@ -732,6 +733,16 @@ impl<N: Network> Gateway<N> {
                             validators.insert(validator_ip, validator_address);
                         }
                     }
+                    // If executing MaliceMode::PeerResponseFlood, create bogus ips to send.
+                    malice_inject!(MaliceMode::PeerResponseFlood, {
+                        for i in 0..(200usize.saturating_sub(validators.len())) {
+                            // This is the stackoverflow ip address, we can expand the attack with more varied IP addresses.
+                            validators.insert(format!("104.18.32.7:5{:03}", i).parse().unwrap(), Address::zero());
+                        }
+                        info!(
+                            "[MaliceMode::PeerResponseFlood] | node/bft/src/gateway.rs | Injecting bogus validators into the response"
+                        );
+                    });
                     // Send the validators response to the peer.
                     let event = Event::ValidatorsResponse(ValidatorsResponse { validators });
                     Transport::send(&self_, peer_ip, event).await;

@@ -40,6 +40,7 @@ use crate::{
 use snarkos_account::Account;
 use snarkos_node_bft_events::PrimaryPing;
 use snarkos_node_bft_ledger_service::LedgerService;
+use snarkos_node_malice::{malice_inject, malice_replace};
 use snarkvm::{
     console::{
         account::Signature,
@@ -414,8 +415,18 @@ impl<N: Network> Primary<N> {
                 'inner: for (id, transmission) in worker_transmissions {
                     // Check if the ledger already contains the transmission.
                     if self.ledger.contains_transmission(&id).unwrap_or(true) {
-                        trace!("Proposing - Skipping transmission '{}' - Already in ledger", fmt_id(id));
-                        continue 'inner;
+                        malice_replace!(
+                            MaliceMode::AllowSeenTransaction,
+                            {
+                                trace!("Proposing - Skipping transmission '{}' - Already in ledger", fmt_id(id));
+                                continue;
+                            },
+                            {
+                                info!(
+                                    "[MaliceMode::AllowSeenTransaction] | node/bft/src/primary.rs::421 | Proposing transmission '{id}' - Already in ledger",
+                                );
+                            }
+                        );
                     }
                     // Check if the storage already contain the transmission.
                     // Note: We do not skip if this is the first transmission in the proposal, to ensure that
@@ -436,8 +447,18 @@ impl<N: Network> Primary<N> {
                         (TransmissionID::Transaction(transaction_id), Transmission::Transaction(transaction)) => {
                             // Check if the transaction is still valid.
                             if let Err(e) = self.ledger.check_transaction_basic(transaction_id, transaction).await {
-                                trace!("Proposing - Skipping transaction '{}' - {e}", fmt_id(transaction_id));
-                                continue 'inner;
+                                malice_replace!(
+                                    MaliceMode::SkipTransactionCheck,
+                                    {
+                                        trace!("Proposing - Skipping transaction '{}' - {e}", fmt_id(transaction_id));
+                                        continue;
+                                    },
+                                    {
+                                        info!(
+                                            "[MaliceMode::SkipTransactionCheck] | node/bft/src/primary.rs::448 | Proposing invalid transaction '{transaction_id}' - {e}",
+                                        );
+                                    }
+                                );
                             }
                             // Increment the number of transactions.
                             num_transactions += 1;
@@ -448,12 +469,143 @@ impl<N: Network> Primary<N> {
                         // All other combinations are clearly invalid.
                         _ => continue 'inner,
                     }
-                    // Insert the transmission into the map.
-                    transmissions.insert(id, transmission);
-                    num_transmissions_included_for_worker += 1;
+                    // If operating maliciously and the transmission is a deployment or execution, attempt to use a fee from a previous transaction.
+                    malice_replace!(
+                        MaliceMode::DoubleSpend,
+                        {
+                            // Insert the transmission into the map.
+                            transmissions.insert(id, transmission);
+                            num_transmissions_included_for_worker += 1;
+                        },
+                        {
+                            if let Transmission::Transaction(transaction) = transmission.clone() {
+                                // Initialize an RNG.
+                                let rng = &mut rand::thread_rng();
+                                // Flip a coin to determine whether or not to inject the transaction.
+                                // Currently set to a 50% chance.
+                                if rng.gen_range(0..2) == 0 {
+                                    // Sample a random block. Note that this unwrap is safe since there is at least one element.
+                                    use rand::prelude::IteratorRandom;
+                                    let height = (0..=self.ledger.latest_block_height()).choose(rng).unwrap();
+                                    let block = self.ledger.get_block(height).unwrap();
+                                    // Sample a random accepted transaction with a fee.
+                                    if let Some(fee) = block
+                                        .transactions()
+                                        .iter()
+                                        .filter(|c| c.is_accepted())
+                                        .choose(rng)
+                                        .and_then(|c| c.transaction().fee_transition())
+                                    {
+                                        let fee_description = match fee.is_fee_public() {
+                                            true => "public",
+                                            false => "private",
+                                        };
+                                        let fee_id = *fee.transition_id();
+                                        let transaction = match transaction.deserialize_blocking() {
+                                            Ok(Transaction::Execute(_, execution, _)) => {
+                                                Transaction::from_execution(execution, Some(fee)).ok()
+                                            }
+                                            Ok(Transaction::Deploy(_, owner, deployment, _)) => {
+                                                Transaction::from_deployment(owner, *deployment, fee).ok()
+                                            }
+                                            _ => None,
+                                        };
+                                        if let Some(transaction) = transaction {
+                                            let id = TransmissionID::from(&transaction.id());
+                                            let transmission = Transmission::from(Data::Object(transaction));
+                                            // Add the transmission.
+                                            transmissions.insert(id, transmission);
+                                            num_transmissions_included_for_worker += 1;
+                                            info!(
+                                                "[MaliceMode::DoubleSpend] | node/bft/src/primary.rs | Injecting a previously spent {fee_description} fee with fee ID {fee_id} into a transaction with transmission ID '{id}' into the batch",
+                                            );
+                                        } else {
+                                            transmissions.insert(id, transmission);
+                                            num_transmissions_included_for_worker += 1;
+                                        }
+                                    } else {
+                                        transmissions.insert(id, transmission);
+                                        num_transmissions_included_for_worker += 1;
+                                    }
+                                } else {
+                                    transmissions.insert(id, transmission);
+                                    num_transmissions_included_for_worker += 1;
+                                }
+                            } else {
+                                transmissions.insert(id, transmission);
+                                num_transmissions_included_for_worker += 1;
+                            }
+                        }
+                    );
                 }
             }
         }
+        // If operating maliciously, randomly add an accepted transaction to the batch.
+        malice_inject!(MaliceMode::ResendConfirmed, {
+            use rand::prelude::IteratorRandom;
+            // Initialize an RNG.
+            let rng = &mut rand::thread_rng();
+            // Flip a coin to determine whether or not to inject the transaction.
+            // Currently set to a 50% chance.
+            if rng.gen_range(0..2) == 0 {
+                // Sample a random block. Note that this unwrap is safe since there is at least one element.
+                let height = (0..=self.ledger.latest_block_height()).choose(rng).unwrap();
+                let block = self.ledger.get_block(height).unwrap();
+                // Sample a random accepted transaction.
+                if let Some(confirmed) = block.transactions().iter().filter(|c| c.is_accepted()).choose(rng) {
+                    // Create a transmission from the transaction.
+                    let transaction = confirmed.transaction();
+                    let id = TransmissionID::from(&transaction.id());
+                    let transmission = Transmission::from(transaction.clone());
+                    info!(
+                        "[MaliceMode::ResendConfirmed] | node/bft/src/primary.rs | Injecting accepted transaction with transmission ID '{id}' into the batch"
+                    );
+                    // Add the transmission and increment the counter.
+                    transmissions.insert(id, transmission);
+                    num_transactions += 1;
+                }
+            }
+        });
+        // If executing MaliceMode::BatchProposalFlood, fill up a few proposals full of transactions.
+        malice_inject!(MaliceMode::BatchProposalFlood, {
+            let first_attack_round = 5;
+            if round >= first_attack_round && round <= first_attack_round + 3 {
+                // Reset the transmissions map.
+                transmissions = Default::default();
+                // Reset the number of transactions.
+                num_transactions = 0;
+                // Load pregenerated transactions into the map
+                use std::{
+                    fs::File,
+                    io::{BufRead, BufReader},
+                    path::PathBuf,
+                };
+                let transactions_path = PathBuf::from(r"/tmp/pregenerated_transactions.txt");
+                let reader = BufReader::new(File::open(transactions_path)?);
+                let tx_manifest = reader
+                    .lines()
+                    .map(|l| l.map_err(|e| anyhow!(e.to_string())))
+                    .collect::<Result<Vec<String>, _>>()?;
+                // We assume we pregenerated 200 transactions.
+                assert!(tx_manifest.len() == 200);
+                // Create an iterator over a subset of the transactions - chosen by the round height.
+                let tx_manifest_iter = tx_manifest
+                    .iter()
+                    .skip((round - first_attack_round) as usize * BatchHeader::<N>::MAX_TRANSMISSIONS_PER_BATCH)
+                    .take(BatchHeader::<N>::MAX_TRANSMISSIONS_PER_BATCH);
+                // Convert transactions to transmissions and add them to the map.
+                for tx_string in tx_manifest_iter {
+                    let transaction = Transaction::<N>::from_str(tx_string)?;
+                    let id = TransmissionID::<N>::from(&transaction.id());
+                    let transmission = Transmission::from(transaction);
+                    info!(
+                        "[MaliceMode::Flood] | node/bft/src/primary.rs | Injecting transmission with transmission ID '{id}' into the batch for round {round}"
+                    );
+                    transmissions.insert(id, transmission);
+                    num_transactions += 1;
+                }
+            }
+        });
         // If there are no unconfirmed transmissions to propose, return early.
         if transmissions.is_empty() {
             debug!("Primary is safely skipping a batch proposal {}", "(no unconfirmed transmissions)".dimmed());
@@ -484,22 +636,89 @@ impl<N: Network> Primary<N> {
         let transmission_ids = transmissions.keys().copied().collect();
         // Prepare the previous batch certificate IDs.
         let previous_certificate_ids = previous_certificates.into_iter().map(|c| c.id()).collect();
-        // Sign the batch header.
-        let batch_header = spawn_blocking!(BatchHeader::new(
-            &private_key,
-            round,
-            now(),
-            committee_id,
-            transmission_ids,
-            previous_certificate_ids,
-            &mut rand::thread_rng()
-        ))?;
-        // Construct the proposal.
-        let proposal = Proposal::new(committee_lookback, batch_header.clone(), transmissions)?;
-        // Broadcast the batch to all validators for signing.
-        self.gateway.broadcast(Event::BatchPropose(batch_header.into()));
-        // Set the proposed batch.
-        *self.proposed_batch.write() = Some(proposal);
+        // If the primary is malicious, propose a batch header with a different round.
+        malice_replace!(
+            MaliceMode::RoundsFarAhead,
+            {
+                // Construct the batch header.
+                let batch_header = spawn_blocking!(BatchHeader::new(
+                    &private_key,
+                    round,
+                    now(),
+                    committee_id,
+                    transmission_ids,
+                    previous_certificate_ids,
+                    &mut rand::thread_rng()
+                ))?;
+
+                // Construct the proposal.
+                let proposal = Proposal::new(committee_lookback, batch_header.clone(), transmissions)?;
+
+                // Broadcast the batch to all validators for signing.
+                self.gateway.broadcast(Event::BatchPropose(batch_header.into()));
+
+                // Set internal proposed_batch to the correct round value.
+                *self.proposed_batch.write() = Some(proposal);
+            },
+            {
+                // If "ROUND_ADVANCE" or "ROUND_INTERVAL" are not set, use default values.
+                let advance = option_env!("ROUND_ADVANCE").map(|s| s.parse().unwrap_or(1500)).unwrap_or(1500);
+                let interval = option_env!("ROUND_INTERVAL").map(|s| s.parse().unwrap_or(10)).unwrap_or(10);
+                let is_malicious_round = round % interval == 0;
+
+                // If the round is a multiple of the malicious interval, advance the round by the
+                // advance amount and propose the malicious batch header.
+                if is_malicious_round {
+                    // Advance the round by the specified amount.
+                    let malicious_round = round + advance;
+                    info!(
+                        "[MaliceMode::RoundsFarAhead] | node/bft/src/primary.rs | Proposing batch header with original round {round} advanced by {advance} rounds to round {}",
+                        malicious_round
+                    );
+
+                    // Craft the malicious batch header.
+                    let previous_certificate_ids_clone = previous_certificate_ids.clone();
+                    let transmission_ids_clone = transmission_ids.clone();
+                    let malicious_batch_header = spawn_blocking!(BatchHeader::new(
+                        &private_key,
+                        malicious_round,
+                        now(),
+                        committee_id,
+                        transmission_ids_clone,
+                        previous_certificate_ids_clone,
+                        &mut rand::thread_rng()
+                    ))?;
+
+                    // Broadcast the batch to all validators for signing.
+                    self.gateway.broadcast(Event::BatchPropose(malicious_batch_header.into()));
+                }
+
+                // Calculate the correct batch header.
+                let correct_batch_header = spawn_blocking!(BatchHeader::new(
+                    &private_key,
+                    round,
+                    now(),
+                    committee_id,
+                    transmission_ids,
+                    previous_certificate_ids,
+                    &mut rand::thread_rng()
+                ))?;
+
+                // Construct the correct proposal.
+                let proposal = Proposal::new(committee_lookback, correct_batch_header.clone(), transmissions)?;
+
+                // If not in a malicious round, broadcast the legitimate batch to all validators
+                // for signing.
+                if !is_malicious_round {
+                    // Broadcast the batch to all validators for signing.
+                    self.gateway.broadcast(Event::BatchPropose(correct_batch_header.into()));
+                }
+
+                // Store the correct proposal in the internal proposed_batch (so the malicious
+                // node does not think it's at the malicious round).
+                *self.proposed_batch.write() = Some(proposal);
+            }
+        );
         Ok(())
     }
 
@@ -1209,7 +1428,23 @@ impl<N: Network> Primary<N> {
             };
         }
         // Broadcast the certified batch to all validators.
-        self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()));
+        malice_replace!(
+            MaliceMode::WithholdLeaderCertificate,
+            {
+                self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()));
+            },
+            {
+                if committee.get_leader(certificate.round())? != self.gateway.account().address() {
+                    // Broadcast the certified batch to all validators.
+                    self.gateway.broadcast(Event::BatchCertified(certificate.clone().into()));
+                } else {
+                    info!(
+                        "[MaliceMode::WithholdLeaderCertificate] | node/bft/src/primary.rs | Skipping sending certified batch for round '{}'",
+                        certificate.round(),
+                    );
+                }
+            }
+        );
         // Log the certified batch.
         let num_transmissions = certificate.transmission_ids().len();
         let round = certificate.round();

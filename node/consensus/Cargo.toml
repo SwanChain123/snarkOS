@@ -68,6 +68,10 @@ version = "=2.2.7"
 default-features = false
 features = [ "persistent" ]
 
+[dependencies.snarkos-node-malice]
+path = "../malice"
+version = "=2.2.7"
+
 [dependencies.snarkvm]
 workspace = true
 

@@ -3008,6 +3008,7 @@ dependencies = [
  "snarkos-node-bft",
  "snarkos-node-cdn",
  "snarkos-node-consensus",
+ "snarkos-node-malice",
  "snarkos-node-metrics",
  "snarkos-node-rest",
  "snarkos-node-router",
@@ -3053,6 +3054,7 @@ dependencies = [
  "snarkos-node-bft-events",
  "snarkos-node-bft-ledger-service",
  "snarkos-node-bft-storage-service",
+ "snarkos-node-malice",
  "snarkos-node-metrics",
  "snarkos-node-sync",
  "snarkos-node-tcp",
@@ -3148,12 +3150,17 @@ dependencies = [
  "snarkos-node-bft",
  "snarkos-node-bft-ledger-service",
  "snarkos-node-bft-storage-service",
+ "snarkos-node-malice",
  "snarkos-node-metrics",
  "snarkvm",
  "tokio",
  "tracing",
  "tracing-test 0.2.4",
 ]
+
+[[package]]
+name = "snarkos-node-malice"
+version = "2.2.7"
 
 [[package]]
 name = "snarkos-node-metrics"
@@ -3211,6 +3218,7 @@ dependencies = [
  "reqwest",
  "serde",
  "snarkos-account",
+ "snarkos-node-malice",
  "snarkos-node-metrics",
  "snarkos-node-router",
  "snarkos-node-router-messages",
