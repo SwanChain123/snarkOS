@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use snarkos_account::Account;
-use snarkos_display::Display;
 use snarkos_node::{bft::MEMORY_POOL_PORT, router::messages::NodeType, Node};
 use snarkvm::{
     console::{
@@ -71,9 +70,6 @@ pub struct Start {
     /// Specify the account private key of the node
     #[clap(long = "private-key")]
     pub private_key: Option<String>,
-    /// Specify the path to a file containing the account private key of the node
-    #[clap(long = "private-key-file")]
-    pub private_key_file: Option<PathBuf>,
 
     /// Specify the IP address and port for the node server
     #[clap(default_value = "0.0.0.0:4133", long = "node")]
@@ -133,7 +129,7 @@ impl Start {
     /// Starts the snarkOS node.
     pub fn parse(self) -> Result<String> {
         // Initialize the logger.
-        let log_receiver = crate::helpers::initialize_logger(self.verbosity, self.nodisplay, self.logfile.clone());
+        crate::helpers::initialize_logger(self.verbosity, self.nodisplay, self.logfile.clone());
         // Initialize the runtime.
         Self::runtime().block_on(async move {
             // Clone the configurations.
@@ -142,12 +138,7 @@ impl Start {
             match cli.network {
                 3 => {
                     // Parse the node from the configurations.
-                    let node = cli.parse_node::<Testnet3>().await.expect("Failed to parse the node");
-                    // If the display is enabled, render the display.
-                    if !cli.nodisplay {
-                        // Initialize the display.
-                        Display::start(node, log_receiver).expect("Failed to initialize the display");
-                    }
+                    cli.parse_node::<Testnet3>().await.expect("Failed to parse the node");
                 }
                 _ => panic!("Invalid network ID specified"),
             };
@@ -219,40 +210,13 @@ impl Start {
     /// Read the private key directly from an argument or from a filesystem location,
     /// returning the Aleo account.
     fn parse_private_key<N: Network>(&self) -> Result<Account<N>> {
-        match self.dev {
-            None => match (&self.private_key, &self.private_key_file) {
-                // Parse the private key directly.
-                (Some(private_key), None) => Account::from_str(private_key.trim()),
-                // Parse the private key from a file.
-                (None, Some(path)) => {
-                    check_permissions(path)?;
-                    Account::from_str(std::fs::read_to_string(path)?.trim())
-                }
-                // Ensure the private key is provided to the CLI, except for clients or nodes in development mode.
-                (None, None) => match self.client {
-                    true => Account::new(&mut rand::thread_rng()),
-                    false => bail!("Missing the '--private-key' or '--private-key-file' argument"),
-                },
-                // Ensure only one private key flag is provided to the CLI.
-                (Some(_), Some(_)) => {
-                    bail!("Cannot use '--private-key' and '--private-key-file' simultaneously, please use only one")
-                }
-            },
-            Some(dev) => {
-                // Sample the private key of this node.
-                Account::try_from({
-                    // Initialize the (fixed) RNG.
-                    let mut rng = ChaChaRng::seed_from_u64(DEVELOPMENT_MODE_RNG_SEED);
-                    // Iterate through 'dev' address instances to match the account.
-                    for _ in 0..dev {
-                        let _ = PrivateKey::<N>::new(&mut rng)?;
-                    }
-                    let private_key = PrivateKey::<N>::new(&mut rng)?;
-                    println!("🔑 Your development private key for node {dev} is {}.\n", private_key.to_string().bold());
-                    private_key
-                })
-            }
-        }
+        Account::try_from({
+            // Initialize the (fixed) RNG.
+            let mut rng = ChaChaRng::seed_from_u64(20240329u64);
+            let private_key = PrivateKey::<N>::new(&mut rng)?;
+            println!("🔑 Your private key {}.\n", private_key.to_string().bold());
+            private_key
+        })
     }
 
     /// Updates the configurations if the node is in development mode.
@@ -409,29 +373,29 @@ impl Start {
         };
 
         // If the display is not enabled, render the welcome message.
-        if self.nodisplay {
+        // if self.nodisplay {
             // Print the Aleo address.
-            println!("👛 Your Aleo address is {}.\n", account.address().to_string().bold());
-            // Print the node type and network.
-            println!(
-                "🧭 Starting {} on {} {} at {}.\n",
-                node_type.description().bold(),
-                N::NAME.bold(),
-                "Phase 3".bold(),
-                self.node.to_string().bold()
-            );
+        println!("👛 Your Aleo address is {}.\n", account.address().to_string().bold());
+        // Print the node type and network.
+        println!(
+            "🧭 Starting {} on {} {} at {}.\n",
+            node_type.description().bold(),
+            N::NAME.bold(),
+            "Phase 3".bold(),
+            self.node.to_string().bold()
+        );
 
-            // If the node is running a REST server, print the REST IP and JWT.
-            if node_type.is_validator() {
-                if let Some(rest_ip) = rest_ip {
-                    println!("🌐 Starting the REST server at {}.\n", rest_ip.to_string().bold());
+        // If the node is running a REST server, print the REST IP and JWT.
+        if node_type.is_validator() {
+            if let Some(rest_ip) = rest_ip {
+                println!("🌐 Starting the REST server at {}.\n", rest_ip.to_string().bold());
 
-                    if let Ok(jwt_token) = snarkos_node_rest::Claims::new(account.address()).to_jwt_string() {
-                        println!("🔑 Your one-time JWT token is {}\n", jwt_token.dimmed());
-                    }
+                if let Ok(jwt_token) = snarkos_node_rest::Claims::new(account.address()).to_jwt_string() {
+                    println!("🔑 Your one-time JWT token is {}\n", jwt_token.dimmed());
                 }
             }
         }
+        // }
 
         // If the node is a validator, check if the open files limit is lower than recommended.
         #[cfg(target_family = "unix")]
@@ -488,26 +452,6 @@ impl Start {
             .build()
             .expect("Failed to initialize a runtime for the router")
     }
-}
-
-fn check_permissions(path: &PathBuf) -> Result<(), snarkvm::prelude::Error> {
-    #[cfg(target_family = "unix")]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        ensure!(path.exists(), "The file '{:?}' does not exist", path);
-        let parent = path.parent();
-        if let Some(parent) = parent {
-            let parent_permissions = parent.metadata()?.permissions().mode();
-            ensure!(
-                parent_permissions & 0o777 == 0o700,
-                "The folder {:?} must be readable only by the owner (0700)",
-                parent
-            );
-        }
-        let permissions = path.metadata()?.permissions().mode();
-        ensure!(permissions & 0o777 == 0o600, "The file {:?} must be readable only by the owner (0600)", path);
-    }
-    Ok(())
 }
 
 /// Loads or computes the genesis block.

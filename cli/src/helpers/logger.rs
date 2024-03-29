@@ -34,11 +34,9 @@ use tracing_subscriber::{
 /// 5 => info, debug, trace, snarkos_node_router=trace
 /// 6 => info, debug, trace, snarkos_node_tcp=trace
 /// ```
-pub fn initialize_logger<P: AsRef<Path>>(verbosity: u8, nodisplay: bool, logfile: P) -> mpsc::Receiver<Vec<u8>> {
+pub fn initialize_logger<P: AsRef<Path>>(verbosity: u8, _nodisplay: bool, logfile: P) -> mpsc::Receiver<Vec<u8>> {
     match verbosity {
-        0 => std::env::set_var("RUST_LOG", "info"),
-        1 => std::env::set_var("RUST_LOG", "debug"),
-        2.. => std::env::set_var("RUST_LOG", "trace"),
+        0.. => std::env::set_var("RUST_LOG", "info")
     };
 
     // Filter out undesirable logs. (unfortunately EnvFilter cannot be cloned)
@@ -98,10 +96,7 @@ pub fn initialize_logger<P: AsRef<Path>>(verbosity: u8, nodisplay: bool, logfile
     let (log_sender, log_receiver) = mpsc::channel(1024);
 
     // Initialize the log sender.
-    let log_sender = match nodisplay {
-        true => None,
-        false => Some(log_sender),
-    };
+    let log_sender = Some(log_sender);
 
     // Initialize tracing.
     let _ = tracing_subscriber::registry()
