@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod parse;
 mod router;
 
+use crate::prover::parse::{parse_env_args, EnvArgs};
 use crate::traits::NodeInterface;
 use snarkos_account::Account;
 use snarkos_node_bft::ledger_service::ProverLedgerService;
 use snarkos_node_router::{
     messages::{Message, NodeType, UnconfirmedSolution},
-    Heartbeat,
-    Inbound,
-    Outbound,
-    Router,
-    Routing,
+    Heartbeat, Inbound, Outbound, Router, Routing,
 };
 use snarkos_node_sync::{BlockSync, BlockSyncMode};
 use snarkos_node_tcp::{
@@ -36,9 +34,11 @@ use snarkvm::{
         block::{Block, Header},
         coinbase::{CoinbasePuzzle, EpochChallenge, ProverSolution},
         store::ConsensusStorage,
-        Network,
+        Address, Network,
     },
 };
+
+use std::str::FromStr;
 
 use aleo_std::StorageMode;
 use anyhow::Result;
@@ -80,6 +80,8 @@ pub struct Prover<N: Network, C: ConsensusStorage<N>> {
     shutdown: Arc<AtomicBool>,
     /// PhantomData.
     _phantom: PhantomData<C>,
+    /// Input parameter.
+    env_parameter: EnvArgs,
 }
 
 impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
@@ -116,6 +118,9 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
         let coinbase_puzzle = CoinbasePuzzle::<N>::load()?;
         // Compute the maximum number of puzzle instances.
         let max_puzzle_instances = num_cpus::get().saturating_sub(2).clamp(1, 6);
+
+        let env_parameter = parse_env_args()?;
+
         // Initialize the node.
         let node = Self {
             router,
@@ -129,6 +134,7 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
             handles: Default::default(),
             shutdown,
             _phantom: Default::default(),
+            env_parameter,
         };
         // Initialize the routing.
         node.initialize_routing().await;
@@ -205,16 +211,24 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
             if let (Some(challenge), Some((coinbase_target, proof_target))) = (latest_epoch_challenge, latest_state) {
                 // Execute the coinbase puzzle.
                 let prover = self.clone();
+                let min_proof_target = self.env_parameter.input_params.min_proof_target;
+
                 let result = tokio::task::spawn_blocking(move || {
-                    prover.coinbase_puzzle_iteration(&challenge, coinbase_target, proof_target, &mut OsRng)
+                    prover.coinbase_puzzle_iteration(&challenge, coinbase_target, min_proof_target, &mut OsRng)
                 })
                 .await;
 
                 // If the prover found a solution, then broadcast it.
                 if let Ok(Some((solution_target, solution))) = result {
-                    info!("Found a Solution '{}' (Proof Target {solution_target})", solution.commitment());
-                    // Broadcast the prover solution.
-                    self.broadcast_prover_solution(solution);
+                    info!(
+                        "Found a Solution '{}' (Proof Target {solution_target} > {min_proof_target})",
+                        solution.commitment()
+                    );
+                    if solution_target > proof_target {
+                        info!("Broadcast a Solution '{}'", solution.commitment());
+                        // Broadcast the prover solution.
+                        self.broadcast_prover_solution(solution);
+                    }
                 }
             } else {
                 // Otherwise, sleep for a brief period of time, to await for puzzle state.
@@ -249,10 +263,17 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
             .dimmed()
         );
 
+        let address = Address::<N>::from_str(&self.env_parameter.input_params.address).unwrap();
+        let nonce: u64 = {
+            let nonce: u64 = rng.gen();
+            let displacement = (8u64 - self.env_parameter.input_params.nonce_len) << 3;
+            nonce & ((1 << displacement) - 1) + self.env_parameter.input_params.nonce_ex << displacement
+        };
+        info!("Address: {}, Nonce: {} {} {}", address, nonce, coinbase_target, proof_target);
         // Compute the prover solution.
         let result = self
             .coinbase_puzzle
-            .prove(epoch_challenge, self.address(), rng.gen(), Some(proof_target))
+            .prove(epoch_challenge, address, nonce, Some(proof_target))
             .ok()
             .and_then(|solution| solution.to_target().ok().map(|solution_target| (solution_target, solution)));
 

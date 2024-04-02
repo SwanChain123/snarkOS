@@ -93,10 +93,10 @@ pub fn initialize_logger<P: AsRef<Path>>(verbosity: u8, _nodisplay: bool, logfil
         File::options().append(true).create(true).open(logfile).expect("Failed to open the file for writing logs");
 
     // Initialize the log channel.
-    let (log_sender, log_receiver) = mpsc::channel(1024);
+    let (_log_sender, log_receiver) = mpsc::channel(1024);
 
     // Initialize the log sender.
-    let log_sender = Some(log_sender);
+    let log_sender = None;
 
     // Initialize tracing.
     let _ = tracing_subscriber::registry()
