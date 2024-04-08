@@ -122,7 +122,7 @@ pub async fn send_post_request(
     let client = reqwest::Client::new();
 
     let json_proof = format!("task_id:{},nonce:{},solution:{},proof:{},target:{}",
-        task_id, nonce, solution, target, proof
+        task_id, nonce, solution, proof, target
     );
 
     let json_data = format!(
