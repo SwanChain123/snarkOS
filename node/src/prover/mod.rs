@@ -276,7 +276,7 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
         let nonce2 = nonce1 & ((1 << displacement) - 1);
         let nonce3 = self.env_parameter.input_params.nonce_ex << displacement;
         let nonce: u64 = nonce2 + nonce3;
-        info!("Address: {}, Nonce1: {:#x} Nonce2: {:#x} Nonce3: {:#x} {:#x} {} {}", address, nonce1, nonce2, nonce3, nonce, coinbase_target, proof_target);
+        // info!("Address: {}, Nonce1: {:#x} Nonce2: {:#x} Nonce3: {:#x} {:#x} {} {}", address, nonce1, nonce2, nonce3, nonce, coinbase_target, proof_target);
         // Compute the prover solution.
         let result = self
             .coinbase_puzzle
