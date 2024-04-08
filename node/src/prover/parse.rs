@@ -113,6 +113,7 @@ pub async fn send_post_request(
     task_id: u64,
     task_type: u64,
     nonce: u64,
+    solution_challenge: &str,
     solution: &str,
     proof: &str,
     target: u64,
@@ -121,8 +122,8 @@ pub async fn send_post_request(
 ) -> Result<(), Error> {
     let client = reqwest::Client::new();
 
-    let json_proof = format!("task_id:{},nonce:{},solution:{},proof:{},target:{}",
-        task_id, nonce, solution, proof, target
+    let json_proof = format!("task_id:{},nonce:{},challenge:{},solution:{},proof:{},target:{}",
+        task_id, nonce, solution_challenge, solution, proof, target
     );
 
     let json_data = format!(

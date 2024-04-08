@@ -227,12 +227,18 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
                     let name_space = self.env_parameter.name_space.clone();
                     let solution_commitment = format!("{}", solution.commitment());
                     let solution_proof = format!("{}", hex::encode(solution.proof().to_bytes_le().unwrap()));
+                    let solution_challenge = format!("{}", hex::encode(challenge.to_bytes_le().unwrap()));
 
                     // test code
                     let commitment = PuzzleCommitment::<N>::from_str(&solution_commitment).unwrap();
                     let proof =
                         PuzzleProof::<N>::from_bytes_le(hex::decode(&solution_proof).unwrap().as_slice()).unwrap();
                     let address = Address::<N>::from_str(&self.env_parameter.input_params.address).unwrap();
+                    let challenge = EpochChallenge::<N>::from_bytes_le(
+                        hex::decode(&solution_challenge).unwrap().as_slice(),
+                    )
+                    .unwrap();
+                
                     let prover_solution =
                         ProverSolution::<N>::new(PartialSolution::<N>::new(address, nonce, commitment), proof);
 
@@ -248,6 +254,7 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
                         task_id,
                         task_type,
                         nonce,
+                        &solution_challenge,
                         &solution_commitment,
                         &solution_proof,
                         solution_target,
