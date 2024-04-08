@@ -15,7 +15,7 @@
 mod parse;
 mod router;
 
-use crate::prover::parse::{parse_env_args, EnvArgs, send_post_request};
+use crate::prover::parse::{parse_env_args, send_post_request, EnvArgs};
 use crate::traits::NodeInterface;
 use snarkos_account::Account;
 use snarkos_node_bft::ledger_service::ProverLedgerService;
@@ -32,9 +32,9 @@ use snarkvm::{
     ledger::narwhal::Data,
     prelude::{
         block::{Block, Header},
-        coinbase::{CoinbasePuzzle, EpochChallenge, ProverSolution},
+        coinbase::{CoinbasePuzzle, EpochChallenge, PartialSolution, ProverSolution, PuzzleCommitment, PuzzleProof},
         store::ConsensusStorage,
-        Address, Network,
+        Address, FromBytes, Network, ToBytes,
     },
 };
 
@@ -212,12 +212,12 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
                 // Execute the coinbase puzzle.
                 let prover = self.clone();
                 let min_proof_target = self.env_parameter.input_params.min_proof_target;
-                
+                let challenge_clone = challenge.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    prover.coinbase_puzzle_iteration(&challenge, coinbase_target, min_proof_target, &mut OsRng)
+                    prover.coinbase_puzzle_iteration(&challenge_clone, coinbase_target, min_proof_target, &mut OsRng)
                 })
                 .await;
-                
+
                 // If the prover found a solution, then broadcast it.
                 if let Ok(Some((solution_target, nonce, solution))) = result {
                     let receive_proof_url = self.env_parameter.receive_proof_url.clone();
@@ -226,7 +226,35 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
                     let zk_type = self.env_parameter.zk_type.clone();
                     let name_space = self.env_parameter.name_space.clone();
                     let solution_commitment = format!("{}", solution.commitment());
-                    let _ = send_post_request(&receive_proof_url, task_id, task_type, nonce, &solution_commitment, solution_target, &zk_type, &name_space).await;
+                    let solution_proof = format!("{}", hex::encode(solution.proof().to_bytes_le().unwrap()));
+
+                    // test code
+                    let commitment = PuzzleCommitment::<N>::from_str(&solution_commitment).unwrap();
+                    let proof =
+                        PuzzleProof::<N>::from_bytes_le(hex::decode(&solution_proof).unwrap().as_slice()).unwrap();
+                    let address = Address::<N>::from_str(&self.env_parameter.input_params.address).unwrap();
+                    let prover_solution =
+                        ProverSolution::<N>::new(PartialSolution::<N>::new(address, nonce, commitment), proof);
+
+                    let verify = prover_solution.verify(
+                        self.coinbase_puzzle.coinbase_verifying_key(),
+                        &challenge,
+                        solution_target,
+                    );
+                    info!("Verify solution {solution_target} {}", verify.unwrap());
+
+                    let _ = send_post_request(
+                        &receive_proof_url,
+                        task_id,
+                        task_type,
+                        nonce,
+                        &solution_commitment,
+                        &solution_proof,
+                        solution_target,
+                        &zk_type,
+                        &name_space,
+                    )
+                    .await;
                     info!(
                         "Found a Solution '{}' nonce '{nonce}' (Proof Target {solution_target} > {min_proof_target})",
                         solution.commitment()
@@ -278,11 +306,10 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
         let nonce: u64 = nonce2 + nonce3;
         // info!("Address: {}, Nonce1: {:#x} Nonce2: {:#x} Nonce3: {:#x} {:#x} {} {}", address, nonce1, nonce2, nonce3, nonce, coinbase_target, proof_target);
         // Compute the prover solution.
-        let result = self
-            .coinbase_puzzle
-            .prove(epoch_challenge, address, nonce, Some(proof_target))
-            .ok()
-            .and_then(|solution| solution.to_target().ok().map(|solution_target| (solution_target, nonce, solution)));
+        let result =
+            self.coinbase_puzzle.prove(epoch_challenge, address, nonce, Some(proof_target)).ok().and_then(|solution| {
+                solution.to_target().ok().map(|solution_target| (solution_target, nonce, solution))
+            });
 
         // Decrement the puzzle instances.
         self.decrement_puzzle_instances();
