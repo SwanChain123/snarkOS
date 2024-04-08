@@ -48,7 +48,7 @@ default-features = false
 git = "https://github.com/AleoHQ/snarkVM.git"
 rev = "f761d1e"
 #version = "=0.16.18"
-features = [ "circuit", "console", "rocks", "cuda" ]
+features = [ "circuit", "console", "rocks" ]
 
 [[bin]]
 name = "snarkos"

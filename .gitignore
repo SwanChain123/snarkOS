@@ -10,3 +10,4 @@ validator-*
 **proptest-regressions/
 **package-lock.json
 **node_modules/
+dockerfiles/aleo-proof/swan-aleo-proof

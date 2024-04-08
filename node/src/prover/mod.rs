@@ -15,7 +15,7 @@
 mod parse;
 mod router;
 
-use crate::prover::parse::{parse_env_args, EnvArgs};
+use crate::prover::parse::{parse_env_args, EnvArgs, send_post_request};
 use crate::traits::NodeInterface;
 use snarkos_account::Account;
 use snarkos_node_bft::ledger_service::ProverLedgerService;
@@ -212,16 +212,23 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
                 // Execute the coinbase puzzle.
                 let prover = self.clone();
                 let min_proof_target = self.env_parameter.input_params.min_proof_target;
-
+                
                 let result = tokio::task::spawn_blocking(move || {
                     prover.coinbase_puzzle_iteration(&challenge, coinbase_target, min_proof_target, &mut OsRng)
                 })
                 .await;
-
+                
                 // If the prover found a solution, then broadcast it.
-                if let Ok(Some((solution_target, solution))) = result {
+                if let Ok(Some((solution_target, nonce, solution))) = result {
+                    let receive_proof_url = self.env_parameter.receive_proof_url.clone();
+                    let task_id = self.env_parameter.task_id;
+                    let task_type = self.env_parameter.task_type;
+                    let zk_type = self.env_parameter.zk_type.clone();
+                    let name_space = self.env_parameter.name_space.clone();
+                    let solution_commitment = format!("{}", solution.commitment());
+                    let _ = send_post_request(&receive_proof_url, task_id, task_type, nonce, &solution_commitment, solution_target, &zk_type, &name_space).await;
                     info!(
-                        "Found a Solution '{}' (Proof Target {solution_target} > {min_proof_target})",
+                        "Found a Solution '{}' nonce '{nonce}' (Proof Target {solution_target} > {min_proof_target})",
                         solution.commitment()
                     );
                     if solution_target > proof_target {
@@ -250,7 +257,7 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
         coinbase_target: u64,
         proof_target: u64,
         rng: &mut R,
-    ) -> Option<(u64, ProverSolution<N>)> {
+    ) -> Option<(u64, u64, ProverSolution<N>)> {
         // Increment the puzzle instances.
         self.increment_puzzle_instances();
 
@@ -264,18 +271,18 @@ impl<N: Network, C: ConsensusStorage<N>> Prover<N, C> {
         );
 
         let address = Address::<N>::from_str(&self.env_parameter.input_params.address).unwrap();
-        let nonce: u64 = {
-            let nonce: u64 = rng.gen();
-            let displacement = (8u64 - self.env_parameter.input_params.nonce_len) << 3;
-            nonce & ((1 << displacement) - 1) + self.env_parameter.input_params.nonce_ex << displacement
-        };
-        info!("Address: {}, Nonce: {} {} {}", address, nonce, coinbase_target, proof_target);
+        let nonce1: u64 = rng.gen();
+        let displacement = (8u64 - self.env_parameter.input_params.nonce_len) << 3;
+        let nonce2 = nonce1 & ((1 << displacement) - 1);
+        let nonce3 = self.env_parameter.input_params.nonce_ex << displacement;
+        let nonce: u64 = nonce2 + nonce3;
+        info!("Address: {}, Nonce1: {:#x} Nonce2: {:#x} Nonce3: {:#x} {:#x} {} {}", address, nonce1, nonce2, nonce3, nonce, coinbase_target, proof_target);
         // Compute the prover solution.
         let result = self
             .coinbase_puzzle
             .prove(epoch_challenge, address, nonce, Some(proof_target))
             .ok()
-            .and_then(|solution| solution.to_target().ok().map(|solution_target| (solution_target, solution)));
+            .and_then(|solution| solution.to_target().ok().map(|solution_target| (solution_target, nonce, solution)));
 
         // Decrement the puzzle instances.
         self.decrement_puzzle_instances();

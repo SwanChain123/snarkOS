@@ -15,6 +15,7 @@
 use serde::Deserialize;
 use std::env;
 use anyhow::{anyhow, Result};
+use reqwest::Error;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct EnvArgs {
@@ -107,6 +108,54 @@ pub fn parse_env_args() -> Result<EnvArgs> {
     Ok(args)
 }
 
+pub async fn send_post_request(
+    url: &str,
+    task_id: u64,
+    task_type: u64,
+    nonce: u64,
+    solution: &str,
+    target: u64,
+    zk_type: &str,
+    name_space: &str,
+) -> Result<(), Error> {
+    let client = reqwest::Client::new();
+
+    let json_proof = format!("task_id:{},nonce:{},solution:{},target:{}",
+        task_id, nonce, solution, target
+    );
+
+    let json_data = format!(
+        r#"
+        {{
+            "task_id": "{}",
+            "task_type": "{}",
+            "proof": "{}",
+            "zk_type": "{}",
+            "name_space": "{}"
+        }}
+        "#,
+        task_id, task_type, json_proof, zk_type, name_space
+    );
+
+    println!("POST data {}", json_data);
+
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .body(json_data.to_owned())
+        .send()
+        .await?;
+
+    // 检查响应状态码
+    if response.status().is_success() {
+        println!("POST请求成功！");
+    } else {
+        println!("POST请求失败：{}", response.status());
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::prover::parse::InputArgs;
@@ -119,5 +168,19 @@ mod tests {
         assert_eq!(args.nonce_len, 1);
         assert_eq!(args.address, "aleo1n6utz6c8gtgqp4xfkm03ckf4n9fupuv3jf0feea9ggt547skasxq423ajy");
         assert_eq!(args.min_proof_target, 100);
+    }
+
+    #[tokio::test]
+    async fn test_send_post_request() {
+        let url = "https://127.0.0.1:9084/api/v1/computing/cp/receive/ubi";
+        let task_id = "10011";
+        let task_type = "1";
+        let proof = "id:10011;nonce:2882303761517117440;solution:puzzle1cryng056kcer4duyaxu68uc3w6hsxsajs0wrwu0xepgsqffsx6rm5pk3t0m9a2yq63pnsr7jw64qz9zdwf6";
+        let zk_type = "aleo-proof";
+        let name_space = "ubi-task-10011";
+
+        let result = send_post_request(url, task_id, task_type, proof, zk_type, name_space).await;
+
+        assert!(result.is_ok());
     }
 }
