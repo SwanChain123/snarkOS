@@ -1,4 +1,4 @@
-VERSION=0.0.4
+VERSION=0.0.5
 NAME=swan-aleo-proof
 REPO=martian123
 
